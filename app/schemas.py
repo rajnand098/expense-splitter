@@ -12,3 +12,19 @@ class UserOut(BaseModel):
     id: int
     name: str
     email: str
+
+
+class GroupCreate(BaseModel):
+    name: str
+
+
+class GroupOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    members: list[UserOut] = []
+
+
+class MemberAdd(BaseModel):
+    user_id: int
