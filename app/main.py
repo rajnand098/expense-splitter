@@ -55,6 +55,47 @@ def split_percentage(total: int, splits: list[schemas.SplitInput]) -> dict[int, 
     return result
 
 
+# ---------- Balance helpers ----------
+
+
+def calculate_balances(
+    expenses: list[models.Expense], member_ids: list[int]
+) -> dict[int, int]:
+    """Har member ka net balance (paise). Positive = lene hain, negative = dene hain."""
+    balances = {uid: 0 for uid in member_ids}
+    for expense in expenses:
+        balances[expense.paid_by] = balances.get(expense.paid_by, 0) + expense.amount
+        for split in expense.splits:
+            balances[split.user_id] = balances.get(split.user_id, 0) - split.amount
+    return balances
+
+
+def simplify_debts(balances: dict[int, int]) -> list[dict]:
+    """Greedy algorithm: sabse bada debtor sabse bade creditor ko deta hai."""
+    creditors = sorted(
+        [[uid, bal] for uid, bal in balances.items() if bal > 0],
+        key=lambda x: -x[1],
+    )
+    debtors = sorted(
+        [[uid, -bal] for uid, bal in balances.items() if bal < 0],
+        key=lambda x: -x[1],
+    )
+    settlements = []
+    i = j = 0
+    while i < len(debtors) and j < len(creditors):
+        pay = min(debtors[i][1], creditors[j][1])
+        settlements.append(
+            {"from_user": debtors[i][0], "to_user": creditors[j][0], "amount": pay}
+        )
+        debtors[i][1] -= pay
+        creditors[j][1] -= pay
+        if debtors[i][1] == 0:
+            i += 1
+        if creditors[j][1] == 0:
+            j += 1
+    return settlements
+
+
 @app.get("/")
 def home():
     return {"message": "Expense Splitter API chal rahi hai!"}
@@ -179,3 +220,30 @@ def list_expenses(group_id: int, db: Session = Depends(get_db)):
     return db.scalars(
         select(models.Expense).where(models.Expense.group_id == group_id)
     ).all()
+
+
+# ---------- Balances ----------
+
+
+@app.get("/groups/{group_id}/balances", response_model=list[schemas.BalanceOut])
+def get_balances(group_id: int, db: Session = Depends(get_db)):
+    group = db.get(models.Group, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    expenses = db.scalars(
+        select(models.Expense).where(models.Expense.group_id == group_id)
+    ).all()
+    balances = calculate_balances(expenses, [m.id for m in group.members])
+    return [{"user_id": uid, "balance": bal} for uid, bal in balances.items()]
+
+
+@app.get("/groups/{group_id}/settlements", response_model=list[schemas.SettlementOut])
+def get_settlements(group_id: int, db: Session = Depends(get_db)):
+    group = db.get(models.Group, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    expenses = db.scalars(
+        select(models.Expense).where(models.Expense.group_id == group_id)
+    ).all()
+    balances = calculate_balances(expenses, [m.id for m in group.members])
+    return simplify_debts(balances)

@@ -9,7 +9,7 @@ Splitwise-style expense sharing backend built with **FastAPI**.
 - [x] Groups and members
 - [x] Expenses with equal split
 - [x] Exact and percentage splits
-- [ ] Balance calculation and debt simplification
+- [x] Balance calculation and debt simplification
 - [ ] JWT authentication
 - [ ] Tests (pytest)
 - [ ] Docker deployment

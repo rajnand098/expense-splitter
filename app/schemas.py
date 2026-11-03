@@ -66,3 +66,14 @@ class ExpenseOut(BaseModel):
     amount: int
     created_at: datetime
     splits: list[SplitOut] = []
+
+
+class BalanceOut(BaseModel):
+    user_id: int
+    balance: int  # paise; positive = lene hain, negative = dene hain
+
+
+class SettlementOut(BaseModel):
+    from_user: int
+    to_user: int
+    amount: int  # paise
