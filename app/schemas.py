@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,10 +33,20 @@ class MemberAdd(BaseModel):
     user_id: int
 
 
+class SplitInput(BaseModel):
+    user_id: int
+    amount: int | None = Field(default=None, gt=0, description="Exact paise")
+    percent: int | None = Field(
+        default=None, gt=0, le=10000, description="Basis points (50% = 5000)"
+    )
+
+
 class ExpenseCreate(BaseModel):
     description: str
     amount: int = Field(gt=0, description="Amount in paise (Rs 100.50 = 10050)")
     paid_by: int
+    split_type: Literal["equal", "exact", "percentage"] = "equal"
+    splits: list[SplitInput] | None = None
 
 
 class SplitOut(BaseModel):
