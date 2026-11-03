@@ -10,12 +10,48 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Expense Splitter")
 
 
+# ---------- Split helpers ----------
+
+
 def split_equally(total: int, user_ids: list[int]) -> dict[int, int]:
     """Total paise ko barabar baanta hai, bacha hua paisa pehle logon ko milta hai."""
     base, remainder = divmod(total, len(user_ids))
     result = {}
     for i, uid in enumerate(user_ids):
         result[uid] = base + (1 if i < remainder else 0)
+    return result
+
+
+def split_exact(total: int, splits: list[schemas.SplitInput]) -> dict[int, int]:
+    result = {}
+    for s in splits:
+        if s.amount is None:
+            raise HTTPException(
+                status_code=400, detail="Exact split needs amount for each user"
+            )
+        result[s.user_id] = s.amount
+    if sum(result.values()) != total:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Split amounts add up to {sum(result.values())}, expected {total}",
+        )
+    return result
+
+
+def split_percentage(total: int, splits: list[schemas.SplitInput]) -> dict[int, int]:
+    for s in splits:
+        if s.percent is None:
+            raise HTTPException(
+                status_code=400, detail="Percentage split needs percent for each user"
+            )
+    if sum(s.percent for s in splits) != 10000:
+        raise HTTPException(
+            status_code=400, detail="Percentages must add up to 100% (10000)"
+        )
+    result = {s.user_id: total * s.percent // 10000 for s in splits}
+    leftover = total - sum(result.values())
+    for uid in list(result)[:leftover]:
+        result[uid] += 1
     return result
 
 
@@ -104,13 +140,30 @@ def create_expense(
     if data.paid_by not in member_ids:
         raise HTTPException(status_code=400, detail="Payer is not a group member")
 
+    if data.split_type == "equal":
+        shares = split_equally(data.amount, member_ids)
+    else:
+        if not data.splits:
+            raise HTTPException(status_code=400, detail="splits list is required")
+        ids = [s.user_id for s in data.splits]
+        if len(set(ids)) != len(ids):
+            raise HTTPException(status_code=400, detail="Duplicate user in splits")
+        if any(uid not in member_ids for uid in ids):
+            raise HTTPException(
+                status_code=400, detail="Split user is not a group member"
+            )
+        if data.split_type == "exact":
+            shares = split_exact(data.amount, data.splits)
+        else:
+            shares = split_percentage(data.amount, data.splits)
+
     expense = models.Expense(
         group_id=group_id,
         paid_by=data.paid_by,
         description=data.description,
         amount=data.amount,
     )
-    for uid, share in split_equally(data.amount, member_ids).items():
+    for uid, share in shares.items():
         expense.splits.append(models.Split(user_id=uid, amount=share))
 
     db.add(expense)
