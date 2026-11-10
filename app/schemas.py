@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class UserCreate(BaseModel):
     name: str
     email: str
+    password: str = Field(min_length=6)
 
 
 class UserOut(BaseModel):
@@ -15,6 +16,11 @@ class UserOut(BaseModel):
     id: int
     name: str
     email: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 
 class GroupCreate(BaseModel):
@@ -44,7 +50,6 @@ class SplitInput(BaseModel):
 class ExpenseCreate(BaseModel):
     description: str
     amount: int = Field(gt=0, description="Amount in paise (Rs 100.50 = 10050)")
-    paid_by: int
     split_type: Literal["equal", "exact", "percentage"] = "equal"
     splits: list[SplitInput] | None = None
 

@@ -10,7 +10,7 @@ Splitwise-style expense sharing backend built with **FastAPI**.
 - [x] Expenses with equal split
 - [x] Exact and percentage splits
 - [x] Balance calculation and debt simplification
-- [ ] JWT authentication
+- [x] JWT authentication
 - [ ] Tests (pytest)
 - [ ] Docker deployment
 
@@ -29,6 +29,7 @@ cd expense-splitter
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
 uvicorn app.main:app --reload
 ```
 

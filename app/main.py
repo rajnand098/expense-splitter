@@ -1,8 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import models, schemas
+from .auth import (
+    create_access_token,
+    get_current_user,
+    hash_password,
+    verify_password,
+)
 from .database import engine, get_db
 
 models.Base.metadata.create_all(bind=engine)
@@ -96,28 +103,68 @@ def simplify_debts(balances: dict[int, int]) -> list[dict]:
     return settlements
 
 
+# ---------- Group access helper ----------
+
+
+def get_group_for_member(
+    group_id: int, db: Session, current_user: models.User
+) -> models.Group:
+    group = db.get(models.Group, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if current_user not in group.members:
+        raise HTTPException(
+            status_code=403, detail="You are not a member of this group"
+        )
+    return group
+
+
 @app.get("/")
 def home():
     return {"message": "Expense Splitter API chal rahi hai!"}
 
 
-# ---------- Users ----------
+# ---------- Auth ----------
 
 
-@app.post("/users", response_model=schemas.UserOut, status_code=201)
-def create_user(data: schemas.UserCreate, db: Session = Depends(get_db)):
+@app.post("/register", response_model=schemas.UserOut, status_code=201)
+def register(data: schemas.UserCreate, db: Session = Depends(get_db)):
     existing = db.scalar(select(models.User).where(models.User.email == data.email))
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    user = models.User(**data.model_dump())
+    user = models.User(
+        name=data.name,
+        email=data.email,
+        hashed_password=hash_password(data.password),
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
 
 
+@app.post("/login", response_model=schemas.Token)
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # /docs ka Authorize button "username" field bhejta hai, hum usme email lete hain
+    user = db.scalar(select(models.User).where(models.User.email == form.username))
+    if not user or not verify_password(form.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    return {"access_token": create_access_token(user.id), "token_type": "bearer"}
+
+
+@app.get("/me", response_model=schemas.UserOut)
+def me(current_user: models.User = Depends(get_current_user)):
+    return current_user
+
+
+# ---------- Users ----------
+
+
 @app.get("/users", response_model=list[schemas.UserOut])
-def list_users(db: Session = Depends(get_db)):
+def list_users(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     return db.scalars(select(models.User)).all()
 
 
@@ -125,8 +172,13 @@ def list_users(db: Session = Depends(get_db)):
 
 
 @app.post("/groups", response_model=schemas.GroupOut, status_code=201)
-def create_group(data: schemas.GroupCreate, db: Session = Depends(get_db)):
+def create_group(
+    data: schemas.GroupCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     group = models.Group(name=data.name)
+    group.members.append(current_user)
     db.add(group)
     db.commit()
     db.refresh(group)
@@ -134,23 +186,27 @@ def create_group(data: schemas.GroupCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/groups", response_model=list[schemas.GroupOut])
-def list_groups(db: Session = Depends(get_db)):
-    return db.scalars(select(models.Group)).all()
+def list_my_groups(current_user: models.User = Depends(get_current_user)):
+    return current_user.groups
 
 
 @app.get("/groups/{group_id}", response_model=schemas.GroupOut)
-def get_group(group_id: int, db: Session = Depends(get_db)):
-    group = db.get(models.Group, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    return group
+def get_group(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    return get_group_for_member(group_id, db, current_user)
 
 
 @app.post("/groups/{group_id}/members", response_model=schemas.GroupOut)
-def add_member(group_id: int, data: schemas.MemberAdd, db: Session = Depends(get_db)):
-    group = db.get(models.Group, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
+def add_member(
+    group_id: int,
+    data: schemas.MemberAdd,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    group = get_group_for_member(group_id, db, current_user)
     user = db.get(models.User, data.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -171,15 +227,13 @@ def add_member(group_id: int, data: schemas.MemberAdd, db: Session = Depends(get
     status_code=201,
 )
 def create_expense(
-    group_id: int, data: schemas.ExpenseCreate, db: Session = Depends(get_db)
+    group_id: int,
+    data: schemas.ExpenseCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
-    group = db.get(models.Group, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-
+    group = get_group_for_member(group_id, db, current_user)
     member_ids = [m.id for m in group.members]
-    if data.paid_by not in member_ids:
-        raise HTTPException(status_code=400, detail="Payer is not a group member")
 
     if data.split_type == "equal":
         shares = split_equally(data.amount, member_ids)
@@ -200,7 +254,7 @@ def create_expense(
 
     expense = models.Expense(
         group_id=group_id,
-        paid_by=data.paid_by,
+        paid_by=current_user.id,
         description=data.description,
         amount=data.amount,
     )
@@ -214,9 +268,12 @@ def create_expense(
 
 
 @app.get("/groups/{group_id}/expenses", response_model=list[schemas.ExpenseOut])
-def list_expenses(group_id: int, db: Session = Depends(get_db)):
-    if not db.get(models.Group, group_id):
-        raise HTTPException(status_code=404, detail="Group not found")
+def list_expenses(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    get_group_for_member(group_id, db, current_user)
     return db.scalars(
         select(models.Expense).where(models.Expense.group_id == group_id)
     ).all()
@@ -226,10 +283,12 @@ def list_expenses(group_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/groups/{group_id}/balances", response_model=list[schemas.BalanceOut])
-def get_balances(group_id: int, db: Session = Depends(get_db)):
-    group = db.get(models.Group, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
+def get_balances(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    group = get_group_for_member(group_id, db, current_user)
     expenses = db.scalars(
         select(models.Expense).where(models.Expense.group_id == group_id)
     ).all()
@@ -238,10 +297,12 @@ def get_balances(group_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/groups/{group_id}/settlements", response_model=list[schemas.SettlementOut])
-def get_settlements(group_id: int, db: Session = Depends(get_db)):
-    group = db.get(models.Group, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
+def get_settlements(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    group = get_group_for_member(group_id, db, current_user)
     expenses = db.scalars(
         select(models.Expense).where(models.Expense.group_id == group_id)
     ).all()
